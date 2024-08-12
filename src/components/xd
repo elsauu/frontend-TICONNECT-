@@ -1,0 +1,578 @@
+import { Avatar, Divider, Flex, Text } from "@chakra-ui/react";
+
+const Comment = ({ reply, lastReply }) => {
+	return (
+		<>
+			<Flex gap={4} py={2} my={2} w={"full"}>
+				<Avatar src={reply.userProfilePic} size={"sm"} />
+				<Flex gap={1} w={"full"} flexDirection={"column"}>
+					<Flex w={"full"} justifyContent={"space-between"} alignItems={"center"}>
+						<Text fontSize='sm' fontWeight='bold'>
+							{reply.username}
+						</Text>
+					</Flex>
+					<Text>{reply.text}</Text>
+				</Flex>
+			</Flex>
+			{!lastReply ? <Divider /> : null}
+		</>
+	);
+};
+
+export default Comment;
+
+
+import {
+	Avatar,
+	AvatarBadge,
+	Box,
+	Flex,
+	Image,
+	Stack,
+	Text,
+	WrapItem,
+	useColorMode,
+	useColorModeValue,
+} from "@chakra-ui/react";
+import { useRecoilState, useRecoilValue } from "recoil";
+import userAtom from "../atoms/userAtom";
+import { BsCheck2All, BsFillImageFill } from "react-icons/bs";
+import { selectedConversationAtom } from "../atoms/messagesAtom";
+
+const Conversation = ({ conversation, isOnline }) => {
+	const user = conversation.participants[0];
+	const currentUser = useRecoilValue(userAtom);
+	const lastMessage = conversation.lastMessage;
+	const [selectedConversation, setSelectedConversation] = useRecoilState(selectedConversationAtom);
+	const colorMode = useColorMode();
+
+	console.log("selectedConverstion", selectedConversation);
+	return (
+		<Flex
+			gap={4}
+			alignItems={"center"}
+			p={"1"}
+			_hover={{
+				cursor: "pointer",
+				bg: useColorModeValue("gray.600", "gray.dark"),
+				color: "white",
+			}}
+			onClick={() =>
+				setSelectedConversation({
+					_id: conversation._id,
+					userId: user._id,
+					userProfilePic: user.profilePic,
+					username: user.username,
+					mock: conversation.mock,
+				})
+			}
+			bg={
+				selectedConversation?._id === conversation._id ? (colorMode === "light" ? "gray.400" : "gray.dark") : ""
+			}
+			borderRadius={"md"}
+		>
+			<WrapItem>
+				<Avatar
+					size={{
+						base: "xs",
+						sm: "sm",
+						md: "md",
+					}}
+					src={user.profilePic}
+				>
+					{isOnline ? <AvatarBadge boxSize='1em' bg='green.500' /> : ""}
+				</Avatar>
+			</WrapItem>
+
+			<Stack direction={"column"} fontSize={"sm"}>
+				<Text fontWeight='700' display={"flex"} alignItems={"center"}>
+					{user.username} 
+				</Text>
+				<Text fontSize={"xs"} display={"flex"} alignItems={"center"} gap={1}>
+					{currentUser._id === lastMessage.sender ? (
+						<Box color={lastMessage.seen ? "blue.400" : ""}>
+							<BsCheck2All size={16} />
+						</Box>
+					) : (
+						""
+					)}
+					{lastMessage.text.length > 18
+						? lastMessage.text.substring(0, 18) + "..."
+						: lastMessage.text || <BsFillImageFill size={16} />}
+				</Text>
+			</Stack>
+		</Flex>
+	);
+};
+
+export default Conversation;
+
+
+import { Avatar, Divider, Flex, Image, Skeleton, SkeletonCircle, Text, useColorModeValue } from "@chakra-ui/react";
+import Message from "./Message";
+import MessageInput from "./MessageInput";
+import { useEffect, useRef, useState } from "react";
+import useShowToast from "../hooks/useShowToast";
+import { conversationsAtom, selectedConversationAtom } from "../atoms/messagesAtom";
+import { useRecoilValue, useSetRecoilState } from "recoil";
+import userAtom from "../atoms/userAtom";
+import { useSocket } from "../context/SocketContext.jsx";
+import messageSound from "../assets/sounds/message.mp3";
+const MessageContainer = () => {
+	const showToast = useShowToast();
+	const selectedConversation = useRecoilValue(selectedConversationAtom);
+	const [loadingMessages, setLoadingMessages] = useState(true);
+	const [messages, setMessages] = useState([]);
+	const currentUser = useRecoilValue(userAtom);
+	const { socket } = useSocket();
+	const setConversations = useSetRecoilState(conversationsAtom);
+	const messageEndRef = useRef(null);
+
+	useEffect(() => {
+		socket.on("newMessage", (message) => {
+			if (selectedConversation._id === message.conversationId) {
+				setMessages((prev) => [...prev, message]);
+			}
+
+			// make a sound if the window is not focused
+			if (!document.hasFocus()) {
+				const sound = new Audio(messageSound);
+				sound.play();
+			}
+
+			setConversations((prev) => {
+				const updatedConversations = prev.map((conversation) => {
+					if (conversation._id === message.conversationId) {
+						return {
+							...conversation,
+							lastMessage: {
+								text: message.text,
+								sender: message.sender,
+							},
+						};
+					}
+					return conversation;
+				});
+				return updatedConversations;
+			});
+		});
+
+		return () => socket.off("newMessage");
+	}, [socket, selectedConversation, setConversations]);
+
+	useEffect(() => {
+		const lastMessageIsFromOtherUser = messages.length && messages[messages.length - 1].sender !== currentUser._id;
+		if (lastMessageIsFromOtherUser) {
+			socket.emit("markMessagesAsSeen", {
+				conversationId: selectedConversation._id,
+				userId: selectedConversation.userId,
+			});
+		}
+
+		socket.on("messagesSeen", ({ conversationId }) => {
+			if (selectedConversation._id === conversationId) {
+				setMessages((prev) => {
+					const updatedMessages = prev.map((message) => {
+						if (!message.seen) {
+							return {
+								...message,
+								seen: true,
+							};
+						}
+						return message;
+					});
+					return updatedMessages;
+				});
+			}
+		});
+	}, [socket, currentUser._id, messages, selectedConversation]);
+
+	useEffect(() => {
+		messageEndRef.current?.scrollIntoView({ behavior: "smooth" });
+	}, [messages]);
+
+	useEffect(() => {
+		const getMessages = async () => {
+			setLoadingMessages(true);
+			setMessages([]);
+			try {
+				if (selectedConversation.mock) return;
+				const res = await fetch(/api/messages/${selectedConversation.userId});
+				const data = await res.json();
+				if (data.error) {
+					showToast("Error", data.error, "error");
+					return;
+				}
+				setMessages(data);
+			} catch (error) {
+				showToast("Error", error.message, "error");
+			} finally {
+				setLoadingMessages(false);
+			}
+		};
+
+		getMessages();
+	}, [showToast, selectedConversation.userId, selectedConversation.mock]);
+
+	return (
+		<Flex
+			flex='70'
+			bg={useColorModeValue("gray.200", "gray.dark")}
+			borderRadius={"md"}
+			p={2}
+			flexDirection={"column"}
+		>
+			{/* Message header */}
+			<Flex w={"full"} h={12} alignItems={"center"} gap={2}>
+				<Avatar src={selectedConversation.userProfilePic} size={"sm"} />
+				<Text display={"flex"} alignItems={"center"}>
+					{selectedConversation.username}
+				</Text>
+			</Flex>
+
+			<Divider />
+
+			<Flex flexDir={"column"} gap={4} my={4} p={2} height={"400px"} overflowY={"auto"}>
+				{loadingMessages &&
+					[...Array(5)].map((_, i) => (
+						<Flex
+							key={i}
+							gap={2}
+							alignItems={"center"}
+							p={1}
+							borderRadius={"md"}
+							alignSelf={i % 2 === 0 ? "flex-start" : "flex-end"}
+						>
+							{i % 2 === 0 && <SkeletonCircle size={7} />}
+							<Flex flexDir={"column"} gap={2}>
+								<Skeleton h='8px' w='250px' />
+								<Skeleton h='8px' w='250px' />
+								<Skeleton h='8px' w='250px' />
+							</Flex>
+							{i % 2 !== 0 && <SkeletonCircle size={7} />}
+						</Flex>
+					))}
+
+				{!loadingMessages &&
+					messages.map((message) => (
+						<Flex
+							key={message._id}
+							direction={"column"}
+							ref={messages.length - 1 === messages.indexOf(message) ? messageEndRef : null}
+						>
+							<Message message={message} ownMessage={currentUser._id === message.sender} />
+						</Flex>
+					))}
+			</Flex>
+
+			<MessageInput setMessages={setMessages} />
+		</Flex>
+	);
+};
+
+export default MessageContainer;
+
+
+import { SearchIcon } from "@chakra-ui/icons";
+import { Box, Button, Flex, Input, Skeleton, SkeletonCircle, Text, useColorModeValue } from "@chakra-ui/react";
+import Conversation from "../components/Conversation";
+import { GiConversation } from "react-icons/gi";
+import MessageContainer from "../components/MessageContainer";
+import { useEffect, useState } from "react";
+import useShowToast from "../hooks/useShowToast";
+import { useRecoilState, useRecoilValue } from "recoil";
+import { conversationsAtom, selectedConversationAtom } from "../atoms/messagesAtom";
+import userAtom from "../atoms/userAtom";
+import { useSocket } from "../context/SocketContext";
+
+const ChatPage = () => {
+	const [searchingUser, setSearchingUser] = useState(false);
+	const [loadingConversations, setLoadingConversations] = useState(true);
+	const [searchText, setSearchText] = useState("");
+	const [selectedConversation, setSelectedConversation] = useRecoilState(selectedConversationAtom);
+	const [conversations, setConversations] = useRecoilState(conversationsAtom);
+	const currentUser = useRecoilValue(userAtom);
+	const showToast = useShowToast();
+	const { socket, onlineUsers } = useSocket();
+
+	useEffect(() => {
+		socket?.on("messagesSeen", ({ conversationId }) => {
+			setConversations((prev) => {
+				const updatedConversations = prev.map((conversation) => {
+					if (conversation._id === conversationId) {
+						return {
+							...conversation,
+							lastMessage: {
+								...conversation.lastMessage,
+								seen: true,
+							},
+						};
+					}
+					return conversation;
+				});
+				return updatedConversations;
+			});
+		});
+	}, [socket, setConversations]);
+
+	useEffect(() => {
+		const getConversations = async () => {
+			try {
+				const res = await fetch("/api/messages/conversations");
+				const data = await res.json();
+				if (data.error) {
+					showToast("Error", data.error, "error");
+					return;
+				}
+				console.log(data);
+				setConversations(data);
+			} catch (error) {
+				showToast("Error", error.message, "error");
+			} finally {
+				setLoadingConversations(false);
+			}
+		};
+
+		getConversations();
+	}, [showToast, setConversations]);
+
+	const handleConversationSearch = async (e) => {
+		e.preventDefault();
+		setSearchingUser(true);
+		try {
+			const res = await fetch(/api/users/profile/${searchText});
+			const searchedUser = await res.json();
+			if (searchedUser.error) {
+				showToast("Error", searchedUser.error, "error");
+				return;
+			}
+
+			const messagingYourself = searchedUser._id === currentUser._id;
+			if (messagingYourself) {
+				showToast("Error", "You cannot message yourself", "error");
+				return;
+			}
+
+			const conversationAlreadyExists = conversations.find(
+				(conversation) => conversation.participants[0]._id === searchedUser._id
+			);
+
+			if (conversationAlreadyExists) {
+				setSelectedConversation({
+					_id: conversationAlreadyExists._id,
+					userId: searchedUser._id,
+					username: searchedUser.username,
+					userProfilePic: searchedUser.profilePic,
+				});
+				return;
+			}
+
+			const mockConversation = {
+				mock: true,
+				lastMessage: {
+					text: "",
+					sender: "",
+				},
+				_id: Date.now(),
+				participants: [
+					{
+						_id: searchedUser._id,
+						username: searchedUser.username,
+						profilePic: searchedUser.profilePic,
+					},
+				],
+			};
+			setConversations((prevConvs) => [...prevConvs, mockConversation]);
+		} catch (error) {
+			showToast("Error", error.message, "error");
+		} finally {
+			setSearchingUser(false);
+		}
+	};
+
+	return (
+		<Box
+			position={"absolute"}
+			left={"50%"}
+			w={{ base: "100%", md: "80%", lg: "750px" }}
+			p={4}
+			transform={"translateX(-50%)"}
+		>
+			<Flex
+				gap={4}
+				flexDirection={{ base: "column", md: "row" }}
+				maxW={{
+					sm: "400px",
+					md: "full",
+				}}
+				mx={"auto"}
+			>
+				<Flex flex={30} gap={2} flexDirection={"column"} maxW={{ sm: "250px", md: "full" }} mx={"auto"}>
+					<Text fontWeight={700} color={useColorModeValue("gray.600", "gray.400")}>
+						Your Conversations
+					</Text>
+					<form onSubmit={handleConversationSearch}>
+						<Flex alignItems={"center"} gap={2}>
+							<Input placeholder='Search for a user' onChange={(e) => setSearchText(e.target.value)} />
+							<Button size={"sm"} onClick={handleConversationSearch} isLoading={searchingUser}>
+								<SearchIcon />
+							</Button>
+						</Flex>
+					</form>
+
+					{loadingConversations &&
+						[0, 1, 2, 3, 4].map((_, i) => (
+							<Flex key={i} gap={4} alignItems={"center"} p={"1"} borderRadius={"md"}>
+								<Box>
+									<SkeletonCircle size={"10"} />
+								</Box>
+								<Flex w={"full"} flexDirection={"column"} gap={3}>
+									<Skeleton h={"10px"} w={"80px"} />
+									<Skeleton h={"8px"} w={"90%"} />
+								</Flex>
+							</Flex>
+						))}
+
+					{!loadingConversations &&
+						conversations.map((conversation) => (
+							<Conversation
+								key={conversation._id}
+								isOnline={onlineUsers.includes(conversation.participants[0]._id)}
+								conversation={conversation}
+							/>
+						))}
+				</Flex>
+				{!selectedConversation._id && (
+					<Flex
+						flex={70}
+						borderRadius={"md"}
+						p={2}
+						flexDir={"column"}
+						alignItems={"center"}
+						justifyContent={"center"}
+						height={"400px"}
+					>
+						<GiConversation size={100} />
+						<Text fontSize={20}>Select a conversation to start messaging</Text>
+					</Flex>
+				)}
+
+				{selectedConversation._id && <MessageContainer />}
+			</Flex>
+		</Box>
+	);
+};
+
+export default ChatPage;
+
+
+import { Box, Flex, Spinner, Input, Button, Heading } from "@chakra-ui/react";
+import { useEffect, useState } from "react";
+import useShowToast from "../hooks/useShowToast";
+import Post from "../components/Post";
+import { useRecoilState } from "recoil";
+import postsAtom from "../atoms/postsAtom";
+import SuggestedUsers from "../components/SuggestedUsers";
+
+const HomePage = () => {
+    const [posts, setPosts] = useRecoilState(postsAtom);
+    const [loading, setLoading] = useState(true);
+    const showToast = useShowToast();
+    const [searchQuery, setSearchQuery] = useState("");
+
+    const getFeedPosts = async () => {
+        setLoading(true);
+        setPosts([]);
+        try {
+            const res = await fetch("/api/posts/feed");
+            const data = await res.json();
+
+            if (!res.ok || !Array.isArray(data)) {
+                showToast("Error", data.error || "Failed to fetch posts", "error");
+                setPosts([]);
+            } else {
+                setPosts(data);
+            }
+        } catch (error) {
+            showToast("Error", error.message, "error");
+            setPosts([]);
+        } finally {
+            setLoading(false);
+        }
+    };
+
+    useEffect(() => {
+        getFeedPosts();
+    }, [showToast, setPosts]);
+
+    const searchPosts = async () => {
+        if (!searchQuery.trim()) return;
+
+        setLoading(true);
+        setPosts([]);
+        try {
+            const res = await fetch('/api/posts/search/${searchQuery}');
+            const data = await res.json();
+
+            if (!res.ok || !Array.isArray(data)) {
+                showToast("Error", data.error || "Failed to fetch posts", "error");
+                setPosts([]);
+            } else {
+                setPosts(data);
+            }
+        } catch (error) {
+            showToast("Error", error.message, "error");
+            setPosts([]);
+        } finally {
+            setLoading(false);
+        }
+    };
+
+    return (
+        <Flex
+            direction={{ base: "column", md: "row" }}
+            gap={4}
+            align="flex-start"
+            p={4}
+        >
+            <Box flex={2} w="full" mb={{ base: 4, md: 0 }}>
+                <Flex mb={4} align="center">
+                    <Input
+                        type="text"
+                        placeholder="Search for a hashtag"
+                        value={searchQuery}
+                        onChange={(e) => setSearchQuery(e.target.value)}
+                        mr={2}
+                    />
+                    <Button onClick={searchPosts}>Search</Button>
+                </Flex>
+
+                {!loading && posts.length === 0 && (
+                    <Heading as="h1" size="lg" textAlign="center">
+                        Follow some users to see the feed
+                    </Heading>
+                )}
+
+                {loading && (
+                    <Flex justify="center">
+                        <Spinner size="xl" />
+                    </Flex>
+                )}
+
+                {posts.map((post) => (
+                    <Post key={post._id} post={post} postedBy={post.postedBy} />
+                ))}
+            </Box>
+            <Box
+                flex={{ base: "none", md: 1 }}
+                display={{ base: "block", md: "block" }}
+                w="full"
+                mt={{ base: 4, md: 0 }}
+            >
+                <SuggestedUsers />
+            </Box>
+        </Flex>
+    );
+};
+
+export default HomePage;
